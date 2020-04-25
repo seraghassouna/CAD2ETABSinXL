@@ -1,0 +1,434 @@
+'Author: Serag Hassouna
+'Language: VBA (in Excel)
+'**********************
+'Why this module was created:-
+'Importing from AutoCAD to ETABS via DXF from ETABS itself is limited only with the Model's geometry,
+'The user has to define and apply structural properties within ETABS, and however ETABS is of course specialized
+'in analysis and design, but it's more constrained in editing the geometrical issues, this is of course is more
+'convenient in AutoCad.
+'So, in order to give the user the free and open ability to edit model's geometry, without the need to redefine
+'structural properties in a newly created ETABS model, the user is allowed to store these properties
+'within the drawing itself, and this module will do the rest.
+'**********************
+Public ColLayer As String 'The layer of columns
+Public mydoc As AcadDocument 'The Drawing Documnet [Declared Public to be used within the userform]
+
+
+Sub CleanOpen_Ev1610()
+
+'Ev1610 means ETABS v16.1.0
+
+'set the path of the dwg file
+Dim mypath As Variant
+mypath = Excel.Application.GetOpenFilename("All Files (*.dwg),*.dwg", , "Select Drawing File")
+If mypath = False Then
+    Err.Raise (1)
+End If
+
+' create an instance to point to Autocad itself
+Dim mycad As AcadApplication
+If mycad Is Nothing Then
+    Set mycad = CreateObject("AutoCad.Application.20")
+Else
+    Set mycad = GetObject(, "AutoCad.Application.20")
+End If
+
+
+'create an instance to point to the file which will be opened
+'Dim mydoc As AcadDocument [Declared as Public to communicate with the userform]
+Set mydoc = mycad.Documents.Open(mypath)
+
+'Get the path to RUNASDATE shortcut that launches ETABS
+' Chr(34) is the parantheses "
+Dim ProgPath As String
+ProgPath = Chr(34) & "E:\Program Sources\RunAsDate 64bit\x64tools\RunAsDate.exe" & Chr(34) & " /movetime 23\02\2017 00:00:00 " & Chr(34) & "C:\Program Files\Computers and Structures\ETABS 2016\ETABS.exe" & Chr(34)
+'Get the Path to the test model
+Dim ModelPath As String
+ModelPath = "E:\Civil Engineering\Practise\Excel training\Cad2ETABSinXL\ETABS_EXP2\ETABS_EXP2.edb"
+
+'Dimension ETABS instance
+Dim myETABSObj As ETABS2016.cOAPI
+
+On Error Resume Next:
+    Set myETABSObj = GetObject(, "CSI.ETABS.API.ETABSObject")
+    If Err.Number <> 0 Then
+        MsgBox "Please Open ETABS, Press ((End)) When Error Messsage Pops Up and try again."
+        '*Close AutoCAD*
+        mydoc.Close 'Close the drawing
+        mycad.Quit 'Close AutoCAD
+        Set mydoc = Nothing
+        Set mycad = Nothing
+        'Raise an error to exit
+        On Error GoTo 0
+        Err.Raise (1)
+    End If
+'get model's instance
+Dim myModel As ETABS2016.cSapModel
+Set myModel = myETABSObj.SapModel
+
+'Dimension the Return value for ETABS's API Procedures
+Dim ret As Long
+
+'Initialize model
+ret = myModel.InitializeNewModel(eUnits_kN_m_C)
+'Create Blank template model
+ret = myModel.File.NewBlank()
+
+'Call StoryInfo(myModel) 'gets stories information from the worksheet ["setStories" restricted in VBA, Damn]
+
+'Get the umbrella "Dictionaries" Collection
+Dim Dicts As AcadDictionaries
+Set Dicts = mydoc.Dictionaries
+
+'**Get Concrete material properties**
+Dim ConcMats As AcadDictionary
+Set ConcMats = Dicts.Item("ConcMaterial")
+Dim MatXrec As AcadXRecord 'to be used with XRecords
+
+Dim i As Integer 'incrementer
+Dim iCount As Long ' a counter to be used with dictionaries
+iCount = ConcMats.Count
+'Put a debugging line to instruct the user to the steps upon him that make the material definition correct.
+MsgBox "For every material definition open the define material window and see the material's values and its Fc', then click cancel to exit", , "Important Notice"
+For i = 0 To iCount - 1
+    Dim DxfGrcd As Variant, Val As Variant
+    DxfGrcd = Array()
+    Val = Array()
+    Set MatXrec = ConcMats.Item(i)
+    MatXrec.GetXRecordData DxfGrcd, Val
+    ReDim Preserve DxfGrcd(7)
+    ReDim Preserve Val(7)
+    'MsgBox Val(0) & " " & Val(1) & " " & Val(2) & " " & Val(3) & " " & Val(4) & " " & Val(5) & " " & Val(6) & " " & Val(7)
+    'Values:-
+    'Val(0)=label, Val(1)=Fc', Val(2)=E, Vals(3)=StrainAtFc, Val(4)=UltimateStrain, Val(5)=PoisonRatio, Val(6)=Thermal Coef
+    'Val(7) = UnitWeight
+    With myModel.PropMaterial
+    'Note: for every definition to be totally correct & to avoid the problem of the assignment of only the last value
+    'of Fc, the user must for every iteration open the definition window and see the value itself in the program.
+    ret = .SetMaterial(Val(0), eMatType_Concrete)
+    ret = .SetOConcrete_1(Val(0), Val(1), False, 0, 2, 4, Val(3), Val(4), -0.1)
+    ret = .SetWeightAndMass(Val(0), 1, Val(7))
+    ret = .SetMPIsotropic(Val(0), Val(2), Val(5), Val(6))
+    End With
+    
+    'Debugging part
+    MsgBox "Go and See " & Val(0) & "'s material definition", , "User Debug Work"
+    'MsgBox Val(0) & " " & Val(1) & " " & i 'debug line to display input values for label and FC'
+    'MsgBox "Go and See " & Val(0) "'s material definition then get out of the definition window"
+    'If i >= 0 Then
+    '    On Error GoTo 0
+    '    Err.Raise (2)
+    'End If
+    'End of Debugging part
+    
+Next i
+
+'**Add Load Patterns**
+Set ConcMats = Dicts.Item("LoadPatterns")
+iCount = ConcMats.Count
+For i = 0 To iCount - 1
+    'Values:-
+    'Val(0)=Name, Val(1)=LoadType
+    DxfGrcd = Array()
+    Val = Array()
+    Set MatXrec = ConcMats.Item(i)
+    MatXrec.GetXRecordData DxfGrcd, Val
+    ReDim Preserve DxfGrcd(1)
+    ReDim Preserve Val(1)
+    
+    Select Case Val(1)
+        Case "Dead"
+            ret = myModel.LoadPatterns.Add(Val(0), eLoadPatternType_Dead)
+        Case "Live"
+            ret = myModel.LoadPatterns.Add(Val(0), eLoadPatternType_Live)
+    End Select
+Next i
+
+'**Get Frame section properties**
+
+'Section modifiers
+Dim BeamMod(7) As Double, ColMod(7) As Double
+'moment modifiers
+For i = 4 To 5
+    BeamMod(i) = 0.35
+    ColMod(i) = 0.7
+Next i
+'torsional modifiers
+BeamMod(3) = 0.01
+ColMod(3) = 0.1
+'other modifiers
+For i = 0 To 2
+    BeamMod(i) = 1
+    ColMod(i) = 1
+Next i
+For i = 6 To 7
+    BeamMod(i) = 1
+    ColMod(i) = 1
+Next i
+
+'Values:-
+'   1- Shared Values:-
+'   Val(0)=label, Val(1)=SectionShape, Val(2)=Material, Val(3)=SectionType
+'   2-Rectangular Section:-
+'   Val(4)=Depth, Val(5)=Breadth
+'   3-Circular Section:-
+'   Val(4)=Diameter, Val(5)=Radius
+Set ConcMats = Dicts.Item("FrSecProp") 'ConcMats is the dictonary
+iCount = ConcMats.Count
+For i = 0 To iCount - 1
+    'Dim DxfGrcd As Variant, Val As Variant
+    DxfGrcd = Array()
+    Val = Array()
+    Set MatXrec = ConcMats.Item(i)
+    MatXrec.GetXRecordData DxfGrcd, Val
+    ReDim Preserve DxfGrcd(5) 'consider upper bound variations in future releases
+    ReDim Preserve Val(5) 'consider upper bound variations in future releases
+    
+    Select Case Val(1)
+        Case "Rec"
+            With myModel.PropFrame
+                ret = .SetRectangle(Val(0), Val(2), Val(4), Val(5))
+                Select Case Val(3)
+                    Case "Beam"
+                        ret = .SetRebarBeam(Val(0), "A615Gr60", "A615Gr60", 0.06, 0.06, 0, 0, 0, 0)
+                        ret = .SetModifiers(Val(0), BeamMod)
+                    Case "Column"
+                        ret = .SetRebarColumn(Val(0), "A615Gr60", "A615Gr60", 1, 1, 0.04, 0, 3, 5, "#20", "#10", 0.015, 0, 0, False)
+                        ret = .SetModifiers(Val(0), ColMod)
+                End Select
+            End With
+        Case "Circular"
+            With myModel.PropFrame
+                ret = .SetCircle(Val(0), Val(2), Val(4))
+                Select Case Val(3)
+                    Case "Beam"
+                        ret = .SetRebarBeam(Val(0), "A615Gr60", "A615Gr60", 0.06, 0.06, 0, 0, 0, 0)
+                        ret = .SetModifiers(Val(0), BeamMod)
+                    Case "Column"
+                        ret = .SetRebarColumn(Val(0), "A615Gr60", "A615Gr60", 2, 1, 0.04, 0, 3, 5, "#20", "#10", 0.015, 0, 0, False)
+                        ret = .SetModifiers(Val(0), ColMod)
+                End Select
+            End With
+    End Select
+Next i
+
+'**Get Slab Sections' Properties**
+
+'Get Slabs' Modifiers
+Dim SlabMod(9) As Double
+
+SlabMod(3) = 0.25: SlabMod(4) = 0.25
+
+For i = 0 To 2
+    SlabMod(i) = 1
+Next i
+
+For i = 5 To 9
+    SlabMod(i) = 1
+Next i
+
+'Values:-
+'Val(0)=Name, Val(1)=Material, Val(2)=Thickness
+Set ConcMats = Dicts.Item("SlabSecProp") 'ConcMats is the dictonary
+iCount = ConcMats.Count
+For i = 0 To iCount - 1
+    'Dim DxfGrcd As Variant, Val As Variant
+    DxfGrcd = Array()
+    Val = Array()
+    Set MatXrec = ConcMats.Item(i)
+    MatXrec.GetXRecordData DxfGrcd, Val
+    ReDim Preserve DxfGrcd(2) 'consider upper bound variations in future releases
+    ReDim Preserve Val(2) 'consider upper bound variations in future releases
+    
+    With myModel.PropArea
+        ret = .SetSlab(Val(0), eSlabType_Slab, eShellType_ShellThin, Val(1), Val(2))
+        ret = .SetModifiers(Val(0), SlabMod)
+    End With
+Next i
+
+'**Get all layers, for every layer draw its content, and for every element assign its loads**
+Dim SSLayer As AcadSelectionSet
+Dim NuminLayer As Long
+Dim j As Long
+Dim k As Long
+Dim myLine As AcadLine
+Dim my3Dface As Acad3DFace
+Dim LayerCd(0) As Integer 'variant causes error, docs are wrong here
+Dim LayerName(0) As Variant
+Set SSLayer = mydoc.SelectionSets.Add("mySS")
+LayerCd(0) = 8 'Layer's DXF group code
+
+Dim FrName As String
+Dim SlbName As String
+Dim SP As Variant, EP As Variant 'start and end points of any line (frame)
+'Dim Coord As Variant 'Coordinates collection array
+Dim V1 As Variant, V2 As Variant, V3 As Variant, V4 As Variant 'the 3DFace's verteces
+Dim A_x(3) As Double, A_y(3) As Double, A_z(3) As Double 'the arrays of 3dface's coordinates supplied to ETABS
+
+Dim ExtDict As AcadDictionary
+Dim SecProp As AcadXRecord
+Dim DistLoads As AcadDictionary
+Dim DistLoad As AcadXRecord
+Dim numPatterns As Integer, l As Integer 'number of defined loads on every drawing element, + the incrementer
+
+'Grap and set stories' elevations
+Dim Ele0 As Double 'The Elevation of "Base"
+Load frmgetcollayer
+frmgetcollayer.Show 'Open the userfrom
+'assign Base's elevation
+Ele0 = BaseLev(mydoc)
+ret = myModel.Story.SetElevation("Base", Ele0)
+'MsgBox "Columns' Layer: " & ColLayer & " , " & "Base Level: " & Ele0 'debug line
+'MsgBox Ele0 & " " & ret 'debug line
+
+'End of graping and setting elevations (under development)
+
+iCount = mydoc.Layers.Count
+'For every layer
+For i = 0 To iCount - 1
+    LayerName(0) = mydoc.Layers.Item(i).Name
+    SSLayer.Select acSelectionSetAll, , , LayerCd, LayerName
+    NuminLayer = SSLayer.Count
+    ret = myModel.GroupDef.SetGroup(LayerName(0))
+    'MsgBox "Layer Name is " & LayerName(0) & " ,No of elements is " & NuminLayer 'debug line
+    'For every element in layer
+    For j = 0 To NuminLayer - 1
+        'MsgBox "Object Name is " & SSLayer.Item(j).ObjectName 'debug line
+        Select Case SSLayer.Item(j).ObjectName
+            Case "AcDbLine"
+                Set myLine = SSLayer.Item(j)
+                SP = myLine.StartPoint
+                EP = myLine.EndPoint
+                FrName = "B-" & Str(j)
+                
+                Set ExtDict = myLine.GetExtensionDictionary
+                Set SecProp = ExtDict.GetObject("SecProp")
+                Set DistLoads = ExtDict.GetObject("DistLoads")
+                numPatterns = DistLoads.Count
+                
+                DxfGrcd = Array()
+                Val = Array()
+                SecProp.GetXRecordData DxfGrcd, Val
+                ReDim Preserve DxfGrcd(0)
+                ReDim Preserve Val(0)
+                ret = myModel.FrameObj.AddByCoord(SP(0), SP(1), SP(2), _
+                EP(0), EP(1), EP(2), FrName, Val(0), FrName)
+                ret = myModel.FrameObj.SetGroupAssign(FrName, LayerName(0))
+                
+                For l = 0 To numPatterns - 1
+                    DxfGrcd = Array()
+                    Val = Array()
+                    Set DistLoad = DistLoads.Item(l)
+                    DistLoad.GetXRecordData DxfGrcd, Val
+                    ReDim Preserve DxfGrcd(3)
+                    ReDim Preserve Val(3)
+                    'MsgBox "[LINE-> ]" & "Load Pattern: " & Val(3) & " , Value: " & Val(1) 'debug line
+                    'Values:-
+                    'Val(0)=StartLoad, Val(1)=EndLoad, Val(2)=DirectionEnum, Val(3)=LoadPattern
+                    ret = myModel.FrameObj.SetLoadDistributed(FrName, Val(3), 1, Val(2), 0, 1, Val(0), Val(1))
+                Next l
+                
+            Case "AcDbFace"
+                Set my3Dface = SSLayer.Item(j)
+                SlbName = "S-" & Str(j)
+                V1 = my3Dface.Coordinate(0)
+                V2 = my3Dface.Coordinate(1)
+                V3 = my3Dface.Coordinate(2)
+                V4 = my3Dface.Coordinate(3)
+                
+                
+                'MsgBox Coord
+                'V1 = Coord(0): V2 = Coord(1): V3 = Coord(2): V4 = Coord(4)
+                'MsgBox "First Vertex is " & V1(0) & " " & V1(1) & " " & V1(2) 'succcessful
+                A_x(0) = V1(0): A_x(1) = V2(0): A_x(2) = V3(0): A_x(3) = V4(0)
+                A_y(0) = V1(1): A_y(1) = V2(1): A_y(2) = V3(1): A_y(3) = V4(1)
+                A_z(0) = V1(2): A_z(1) = V2(2): A_z(2) = V3(2): A_z(3) = V4(2)
+                
+                Set ExtDict = my3Dface.GetExtensionDictionary
+                Set SecProp = ExtDict.GetObject("SecProp")
+                Set DistLoads = ExtDict.GetObject("DistLoads")
+                numPatterns = DistLoads.Count
+                
+                DxfGrcd = Array()
+                Val = Array()
+                SecProp.GetXRecordData DxfGrcd, Val
+                ReDim Preserve DxfGrcd(0)
+                ReDim Preserve Val(0)
+                'Values:-
+                'Val(0)=SectionProperty
+                ret = myModel.AreaObj.AddByCoord(4, A_x, A_y, A_z, SlbName, Val(0), SlbName)
+                ret = myModel.AreaObj.SetGroupAssign(SlbName, LayerName(0))
+                
+                For l = 0 To numPatterns - 1
+                    DxfGrcd = Array()
+                    Val = Array()
+                    Set DistLoad = DistLoads.Item(l)
+                    DistLoad.GetXRecordData DxfGrcd, Val
+                    ReDim Preserve DxfGrcd(2)
+                    ReDim Preserve Val(2)
+                    'MsgBox "[AREA]-> " & "Load Pattern: " & Val(2) & " , Value: " & Val(0) 'debug line
+                    'Values:-
+                    'Val(0)=LoadValue, Val(1)=DirectionEnum, Val(2)=LoadPattern
+                    ret = myModel.AreaObj.SetLoadUniform(SlbName, Val(2), Val(0), Val(1))
+                Next l
+                
+        End Select
+    Next j
+    SSLayer.Clear
+Next i
+
+'Refresh View
+ret = myModel.View.RefreshView()
+
+'**CLOSING OPERATION**
+mydoc.Close 'Close the drawing
+mycad.Quit 'Close AutoCAD
+Set mydoc = Nothing
+Set mycad = Nothing
+Set ConcMats = Nothing
+Set Dicts = Nothing
+
+MsgBox "Done!", , "CAD2ETABSinXL"
+End Sub
+
+Sub About()
+
+MsgBox "Utility Name: CAD2ETABSinXL" & vbCrLf & vbCrLf & "Release Year: 2017" & vbCrLf & "Utility Version: 0.9.1 [Beta]" & vbCrLf _
+& "Supports ETABS version 16.1.0" & vbCrLf & _
+vbCrLf & "Developer: Eng. Serag Hassouna" & vbCrLf & "Email: serag.hassouna@gmail.com", , "About"
+
+End Sub
+
+Private Function BaseLev(ByRef doc As AcadDocument) As Double
+
+'This function takes the columns' layer and returns the lower level
+
+Dim MCount As Long 'number of columns in the specified layer
+Dim SP As Variant, EP As Variant 'start and end point of columns
+Dim myCol As AcadLine
+Dim SS2base As AcadSelectionSet 'a selection set to get all columns
+
+Dim i As Long
+Dim LName(0) As Variant 'layer name to be passed to the selection set
+Dim CdLayer(0) As Integer 'layer DXF group code to be passed to the selection set
+CdLayer(0) = 8
+LName(0) = ColLayer
+Set SS2base = doc.SelectionSets.Add("ColSS") 'columns' selection set
+SS2base.Select acSelectionSetAll, , , CdLayer, LName
+MCount = SS2base.Count
+
+Dim myVal As Double 'the value of the lowest level
+'Initialize myVal
+Set myCol = SS2base.Item(0)
+SP = myCol.StartPoint
+myVal = SP(2)
+'End of Initialization
+
+For i = 0 To MCount - 1
+    Set myCol = SS2base.Item(i)
+    SP = myCol.StartPoint
+    EP = myCol.EndPoint
+    myVal = Excel.WorksheetFunction.Min(SP(2), EP(2), myVal)
+Next i
+BaseLev = myVal
+End Function
